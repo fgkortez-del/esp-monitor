@@ -1,0 +1,56 @@
+name: ESP Monitor Tests
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile Python files
+        run: |
+          python -m compileall app tests scripts
+
+      - name: Run database tests
+        run: |
+          python -m tests.test_database
+
+      - name: Run resource tests
+        run: |
+          python -m tests.test_resources
+
+      - name: Run migration tests
+        run: |
+          python -m tests.test_migrations
+
+      - name: Run repository tests
+        run: |
+          python -m tests.test_repositories
+
+      - name: Run service tests
+        run: |
+          python -m tests.test_services
+
+      - name: Run API tests
+        run: |
+          python -m tests.test_api
