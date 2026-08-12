@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>ESP Monitor</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='css/style.css') }}"
+    >
+
+</head>
+
+<body>
+
+<div class="app">
+
+    <header class="header">
+
+        <div>
+
+            <h1>ESP Monitor</h1>
+
+            <p class="subtitle">
+                Мониторинг температуры, влажности и батареи
+            </p>
+
+        </div>
+
+        <div class="header-info">
+
+            <div
+                id="current-time"
+                class="current-time"
+            >
+                --:--:--
+            </div>
+
+            <div
+                id="last-update"
+                class="last-update"
+            >
+                Обновление...
+            </div>
+
+        </div>
+
+    </header>
+
+
+    <main>
+
+        <div
+            id="loading"
+            class="loading"
+        >
+            Загрузка данных...
+        </div>
+
+
+        <div
+            id="error"
+            class="error hidden"
+        >
+        </div>
+
+
+        <div
+            id="devices"
+            class="devices"
+        >
+        </div>
+
+
+        <div
+            id="no-devices"
+            class="no-devices hidden"
+        >
+
+            <div class="no-devices-icon">
+                📡
+            </div>
+
+            <h2>
+                Нет зарегистрированных датчиков
+            </h2>
+
+            <p>
+                Когда ESP впервые отправит измерение,
+                он появится здесь автоматически.
+            </p>
+
+        </div>
+
+    </main>
+
+</div>
+
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+</body>
+
+</html>

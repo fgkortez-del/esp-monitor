@@ -1,0 +1,518 @@
+/* =====================================================================
+   Base
+   ===================================================================== */
+
+* {
+    box-sizing: border-box;
+}
+
+
+html {
+    min-height: 100%;
+}
+
+
+body {
+    margin: 0;
+
+    min-height: 100vh;
+
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Roboto,
+        Arial,
+        sans-serif;
+
+    background: #f3f4f6;
+
+    color: #111827;
+}
+
+
+.hidden {
+    display: none !important;
+}
+
+
+/* =====================================================================
+   Application
+   ===================================================================== */
+
+.app {
+    width: 100%;
+
+    max-width: 1500px;
+
+    margin: 0 auto;
+
+    padding: 24px;
+}
+
+
+/* =====================================================================
+   Header
+   ===================================================================== */
+
+.header {
+    display: flex;
+
+    justify-content: space-between;
+
+    align-items: center;
+
+    gap: 24px;
+
+    margin-bottom: 24px;
+
+    padding: 24px;
+
+    background: white;
+
+    border-radius: 16px;
+
+    box-shadow:
+        0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+
+.header h1 {
+    margin: 0 0 6px;
+
+    font-size: 30px;
+}
+
+
+.subtitle {
+    margin: 0;
+
+    color: #6b7280;
+
+    font-size: 15px;
+}
+
+
+.header-info {
+    text-align: right;
+}
+
+
+.current-time {
+    font-size: 22px;
+
+    font-weight: 700;
+
+    font-variant-numeric: tabular-nums;
+}
+
+
+.last-update {
+    margin-top: 5px;
+
+    color: #6b7280;
+
+    font-size: 13px;
+}
+
+
+/* =====================================================================
+   Devices
+   ===================================================================== */
+
+.devices {
+    display: flex;
+
+    flex-direction: column;
+
+    gap: 24px;
+}
+
+
+.device-card {
+    background: white;
+
+    border-radius: 16px;
+
+    padding: 24px;
+
+    box-shadow:
+        0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+
+/* =====================================================================
+   Device header
+   ===================================================================== */
+
+.device-header {
+    display: flex;
+
+    justify-content: space-between;
+
+    align-items: center;
+
+    gap: 20px;
+
+    margin-bottom: 18px;
+}
+
+
+.device-header h2 {
+    margin: 0;
+
+    font-size: 24px;
+}
+
+
+.device-id {
+    margin-top: 4px;
+
+    color: #9ca3af;
+
+    font-size: 12px;
+}
+
+
+/* =====================================================================
+   Online / Offline
+   ===================================================================== */
+
+.status {
+    display: inline-flex;
+
+    align-items: center;
+
+    gap: 8px;
+
+    padding: 7px 12px;
+
+    border-radius: 999px;
+
+    font-size: 13px;
+
+    font-weight: 700;
+}
+
+
+.status.online {
+    color: #166534;
+
+    background: #dcfce7;
+}
+
+
+.status.offline {
+    color: #991b1b;
+
+    background: #fee2e2;
+}
+
+
+.status-dot {
+    width: 9px;
+
+    height: 9px;
+
+    border-radius: 50%;
+
+    display: inline-block;
+}
+
+
+.status.online .status-dot {
+    background: #16a34a;
+}
+
+
+.status.offline .status-dot {
+    background: #dc2626;
+}
+
+
+/* =====================================================================
+   Device metadata
+   ===================================================================== */
+
+.device-meta {
+    display: flex;
+
+    gap: 40px;
+
+    padding: 14px 0 20px;
+
+    border-top: 1px solid #e5e7eb;
+
+    border-bottom: 1px solid #e5e7eb;
+}
+
+
+.meta-label {
+    display: block;
+
+    margin-bottom: 4px;
+
+    color: #6b7280;
+
+    font-size: 12px;
+}
+
+
+.device-meta strong {
+    font-size: 14px;
+
+    font-variant-numeric: tabular-nums;
+}
+
+
+/* =====================================================================
+   Metrics
+   ===================================================================== */
+
+.metrics {
+    display: grid;
+
+    grid-template-columns:
+        repeat(3, minmax(0, 1fr));
+
+    gap: 16px;
+
+    margin: 20px 0;
+}
+
+
+.metric {
+    display: flex;
+
+    align-items: center;
+
+    gap: 14px;
+
+    padding: 18px;
+
+    border-radius: 12px;
+
+    background: #f9fafb;
+
+    border: 1px solid #e5e7eb;
+}
+
+
+.metric-icon {
+    display: flex;
+
+    align-items: center;
+
+    justify-content: center;
+
+    width: 44px;
+
+    height: 44px;
+
+    border-radius: 10px;
+
+    font-size: 23px;
+}
+
+
+.temperature-icon {
+    background: #fee2e2;
+}
+
+
+.humidity-icon {
+    background: #e0f2fe;
+}
+
+
+.battery-icon {
+    background: #dcfce7;
+}
+
+
+.metric-label {
+    margin-bottom: 4px;
+
+    color: #6b7280;
+
+    font-size: 13px;
+}
+
+
+.metric-value {
+    font-size: 22px;
+
+    font-weight: 700;
+
+    font-variant-numeric: tabular-nums;
+}
+
+
+/* =====================================================================
+   Charts
+   ===================================================================== */
+
+.charts {
+    display: grid;
+
+    grid-template-columns:
+        repeat(3, minmax(0, 1fr));
+
+    gap: 16px;
+
+    margin-top: 20px;
+}
+
+
+.chart-card {
+    min-width: 0;
+
+    padding: 16px;
+
+    border: 1px solid #e5e7eb;
+
+    border-radius: 12px;
+
+    background: #ffffff;
+}
+
+
+.chart-card h3 {
+    margin: 0 0 12px;
+
+    font-size: 15px;
+}
+
+
+.chart-container {
+    position: relative;
+
+    height: 280px;
+
+    width: 100%;
+}
+
+
+/* =====================================================================
+   Loading / Error
+   ===================================================================== */
+
+.loading {
+    padding: 50px;
+
+    text-align: center;
+
+    color: #6b7280;
+}
+
+
+.error {
+    margin-bottom: 20px;
+
+    padding: 16px;
+
+    border-radius: 10px;
+
+    color: #991b1b;
+
+    background: #fee2e2;
+
+    border: 1px solid #fecaca;
+}
+
+
+.no-devices {
+    padding: 70px 30px;
+
+    text-align: center;
+
+    background: white;
+
+    border-radius: 16px;
+
+    box-shadow:
+        0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+
+.no-devices-icon {
+    font-size: 48px;
+
+    margin-bottom: 10px;
+}
+
+
+.no-devices h2 {
+    margin: 0 0 10px;
+}
+
+
+.no-devices p {
+    margin: 0;
+
+    color: #6b7280;
+}
+
+
+/* =====================================================================
+   Mobile
+   ===================================================================== */
+
+@media (
+    max-width: 1100px
+) {
+
+    .charts {
+        grid-template-columns: 1fr;
+    }
+
+}
+
+
+@media (
+    max-width: 700px
+) {
+
+    .app {
+        padding: 12px;
+    }
+
+
+    .header {
+        flex-direction: column;
+
+        align-items: flex-start;
+
+        padding: 18px;
+    }
+
+
+    .header-info {
+        text-align: left;
+    }
+
+
+    .metrics {
+        grid-template-columns: 1fr;
+    }
+
+
+    .device-card {
+        padding: 16px;
+    }
+
+
+    .device-header {
+        align-items: flex-start;
+
+        flex-direction: column;
+    }
+
+
+    .device-meta {
+        flex-direction: column;
+
+        gap: 12px;
+    }
+
+}
