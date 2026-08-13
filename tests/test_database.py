@@ -1,7 +1,8 @@
-from app.core.database import Database
+from tests.test_helpers import TestDatabase
 
-db = Database()
 
-db.initialize()
+with TestDatabase() as db:
+    print("Test database:", db.database)
+    print("Connected:", db.connected)
 
 print("Database OK")
