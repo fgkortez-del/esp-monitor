@@ -1,7 +1,7 @@
-from tests.test_helpers import TestDatabase
+from tests.test_helpers import DatabaseTestContext
 
 
-with TestDatabase() as db:
+with DatabaseTestContext() as db:
     print("Test database:", db.database)
     print("Connected:", db.connected)
 

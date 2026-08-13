@@ -1,7 +1,7 @@
-from tests.test_helpers import TestDatabase
+from tests.test_helpers import DatabaseTestContext
 
 
-with TestDatabase() as db:
+with DatabaseTestContext() as db:
     rows = db.execute(
         """
         SELECT filename, checksum, applied_at

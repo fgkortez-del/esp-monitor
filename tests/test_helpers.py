@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 from app.core.database import Database
 
 
-class TestDatabase:
+class DatabaseTestContext:
     """
     Временная SQLite-база для тестов.
 
