@@ -1,8 +1,5 @@
-from tests.test_helpers import DatabaseTestContext
-
-
-with DatabaseTestContext() as db:
-    rows = db.execute(
+def test_migrations_applied(test_db):
+    rows = test_db.execute(
         """
         SELECT filename, checksum, applied_at
         FROM migrations
@@ -10,9 +7,7 @@ with DatabaseTestContext() as db:
         """
     ).fetchall()
 
-    assert len(rows) == 2, (
-        f"Expected 2 migrations, got {len(rows)}"
-    )
+    assert len(rows) == 2
 
     assert rows[0]["filename"] == "000_initial.sql"
     assert rows[1]["filename"] == "001_sensor_model.sql"
@@ -23,12 +18,9 @@ with DatabaseTestContext() as db:
     assert rows[0]["applied_at"]
     assert rows[1]["applied_at"]
 
-    print("test_migrations_applied: OK")
 
-    # Повторный запуск миграций не должен ничего менять.
-    db.initialize()
-
-    rows_after = db.execute(
+def test_migrations_idempotent(test_db):
+    before = test_db.execute(
         """
         SELECT filename, checksum, applied_at
         FROM migrations
@@ -36,10 +28,19 @@ with DatabaseTestContext() as db:
         """
     ).fetchall()
 
-    assert len(rows_after) == 2
-    assert rows_after[0]["filename"] == "000_initial.sql"
-    assert rows_after[1]["filename"] == "001_sensor_model.sql"
+    test_db.initialize()
 
-    print("test_migrations_idempotent: OK")
+    after = test_db.execute(
+        """
+        SELECT filename, checksum, applied_at
+        FROM migrations
+        ORDER BY filename
+        """
+    ).fetchall()
 
-print("ALL MIGRATION TESTS: OK")
+    assert len(after) == len(before)
+
+    for before_row, after_row in zip(before, after):
+        assert before_row["filename"] == after_row["filename"]
+        assert before_row["checksum"] == after_row["checksum"]
+        assert before_row["applied_at"] == after_row["applied_at"]
