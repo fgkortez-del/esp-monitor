@@ -1,16 +1,16 @@
 """
-Управление SQL-миграциями.
+Управление SQL-миграциями SQLite.
 
 MigrationManager отвечает за:
 
 - создание служебной таблицы migrations;
-- поиск SQL-файлов миграций;
-- применение новых миграций;
-- проверку контрольных сумм;
-- регистрацию выполненных миграций.
+- поиск файлов миграций;
+- проверку checksum уже применённых миграций;
+- последовательное применение новых миграций;
+- регистрацию успешно применённых миграций.
 
-Менеджер ничего не знает о классе Database.
-Ему требуется только открытое sqlite3.Connection.
+MigrationManager работает непосредственно с sqlite3.Connection
+и ничего не знает о классе Database.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from pathlib import Path
 
 from app.core.constants import MIGRATIONS_TABLE
 from app.core.exceptions import (
@@ -28,10 +28,11 @@ from app.core.exceptions import (
 )
 from app.core.resources import ResourceManager
 
+
 logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, slots=True)
 class AppliedMigration:
     """
     Информация о применённой миграции.
@@ -39,23 +40,33 @@ class AppliedMigration:
 
     filename: str
     checksum: str
-    applied_at: str
+    applied_at: int
 
 
 class MigrationManager:
     """
-    Менеджер SQL-миграций.
+    Управление SQL-миграциями.
     """
 
-    def __init__(self, connection: sqlite3.Connection):
-
+    def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
 
-    # ---------------------------------------------------------
+    # ==================================================================
+    # Public API
+    # ==================================================================
 
     def migrate(self) -> None:
         """
-        Проверить и применить все отсутствующие миграции.
+        Проверить и применить все неприменённые миграции.
+
+        Миграции применяются строго в порядке имени файла.
+
+        Если миграция уже применена, её checksum проверяется.
+
+        Если файл миграции был изменён после применения,
+        выбрасывается MigrationChecksumError.
+
+        Каждая новая миграция применяется атомарно.
         """
 
         logger.info("Checking database migrations...")
@@ -65,65 +76,175 @@ class MigrationManager:
         applied = self._load_applied()
 
         for filename, path in ResourceManager.migration_files():
-
             checksum = ResourceManager.sha256(path)
 
-            migration = applied.get(filename)
+            previous = applied.get(filename)
 
-            if migration is not None:
+            if previous is not None:
+                self._validate_checksum(
+                    filename=filename,
+                    actual_checksum=checksum,
+                    expected_checksum=previous.checksum,
+                )
 
-                if migration.checksum != checksum:
-
-                    raise MigrationChecksumError(
-                        f"Migration '{filename}' has been modified."
-                    )
+                logger.debug(
+                    "Migration already applied: %s",
+                    filename,
+                )
 
                 continue
 
-            logger.info("Applying migration %s", filename)
-
-            sql = ResourceManager.read_text(path)
-
             self._apply(
                 filename=filename,
-                sql=sql,
+                path=path,
                 checksum=checksum,
             )
 
-        logger.info("Migration check finished.")
+        logger.info("Database migrations are up to date.")
 
-    # ---------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def validate(self) -> None:
         """
-        Проверить контрольные суммы уже применённых миграций.
+        Проверить все уже применённые миграции.
+
+        Проверяются:
+
+        - существование файла;
+        - соответствие checksum.
+
+        Новые миграции здесь НЕ применяются.
         """
+
+        self._ensure_table()
 
         applied = self._load_applied()
 
         for filename, migration in applied.items():
-
             path = ResourceManager.migration_path(filename)
 
             if not path.exists():
-
                 raise MigrationFileError(
                     f"Migration file '{filename}' not found."
                 )
 
             checksum = ResourceManager.sha256(path)
 
-            if checksum != migration.checksum:
+            self._validate_checksum(
+                filename=filename,
+                actual_checksum=checksum,
+                expected_checksum=migration.checksum,
+            )
 
-                raise MigrationChecksumError(
-                    f"Checksum mismatch for '{filename}'."
+    # ------------------------------------------------------------------
+
+    def applied_migrations(self) -> list[AppliedMigration]:
+        """
+        Вернуть список применённых миграций.
+        """
+
+        self._ensure_table()
+
+        return list(self._load_applied().values())
+
+    # ==================================================================
+    # Migration application
+    # ==================================================================
+
+    def _apply(
+        self,
+        *,
+        filename: str,
+        path: Path,
+        checksum: str,
+    ) -> None:
+        """
+        Применить одну миграцию атомарно.
+
+        SQL миграции и запись в migrations выполняются
+        в одной транзакции.
+        """
+
+        logger.info("Applying migration: %s", filename)
+
+        try:
+            sql = ResourceManager.read_text(path)
+
+        except (OSError, UnicodeError) as exc:
+            raise MigrationFileError(
+                f"Cannot read migration file '{filename}'."
+            ) from exc
+
+        try:
+            self.connection.execute("BEGIN")
+
+            self._execute_script(sql)
+
+            self.connection.execute(
+                f"""
+                INSERT INTO {MIGRATIONS_TABLE}
+                (
+                    filename,
+                    checksum
                 )
+                VALUES (?, ?)
+                """,
+                (
+                    filename,
+                    checksum,
+                ),
+            )
 
-    # ---------------------------------------------------------
+            self.connection.commit()
+
+        except sqlite3.Error as exc:
+            self.connection.rollback()
+
+            logger.exception(
+                "Migration failed: %s",
+                filename,
+            )
+
+            raise MigrationError(
+                f"Unable to apply migration '{filename}'."
+            ) from exc
+
+        logger.info("Migration applied: %s", filename)
+
+    # ------------------------------------------------------------------
+
+    def _execute_script(self, sql: str) -> None:
+        """
+        Выполнить SQL-скрипт внутри текущей транзакции.
+
+        В отличие от sqlite3.executescript(), здесь не происходит
+        автоматического COMMIT.
+
+        Поддерживается:
+
+        - обычный SQL;
+        - комментарии;
+        - строки;
+        - CREATE TRIGGER ... BEGIN ... END;
+        """
+
+        statements = self._split_sql(sql)
+
+        for statement in statements:
+            logger.debug(
+                "Executing migration SQL: %s",
+                statement.strip(),
+            )
+
+            self.connection.execute(statement)
+
+    # ==================================================================
+    # Migration state
+    # ==================================================================
 
     def _load_applied(self) -> dict[str, AppliedMigration]:
         """
-        Загрузить список применённых миграций.
+        Загрузить применённые миграции.
         """
 
         cursor = self.connection.execute(
@@ -137,128 +258,23 @@ class MigrationManager:
             """
         )
 
-        migrations: dict[str, AppliedMigration] = {}
-
-        for row in cursor.fetchall():
-
-            migrations[row["filename"]] = AppliedMigration(
+        return {
+            row["filename"]: AppliedMigration(
                 filename=row["filename"],
                 checksum=row["checksum"],
                 applied_at=row["applied_at"],
             )
+            for row in cursor.fetchall()
+        }
 
-        return migrations
-        # ---------------------------------------------------------
-
-    def _apply(
-        self,
-        *,
-        filename: str,
-        sql: str,
-        checksum: str,
-    ) -> None:
-        """
-        Применить одну SQL-миграцию.
-        """
-
-        timestamp = datetime.now(UTC).isoformat(timespec="seconds")
-
-        try:
-
-            with self.connection:
-
-                self.connection.executescript(sql)
-
-                self._register(
-                    filename=filename,
-                    checksum=checksum,
-                    applied_at=timestamp,
-                )
-
-
-
-        except sqlite3.Error as exc:
-
-
-            raise MigrationError(
-                f"Unable to apply migration '{filename}'."
-            ) from exc
-
-    # ---------------------------------------------------------
-
-    def _register(
-        self,
-        *,
-        filename: str,
-        checksum: str,
-        applied_at: str,
-    ) -> None:
-        """
-        Зарегистрировать применённую миграцию.
-        """
-
-        self.connection.execute(
-            f"""
-            INSERT INTO {MIGRATIONS_TABLE}
-            (
-                filename,
-                checksum,
-                applied_at
-            )
-            VALUES
-            (
-                ?,
-                ?,
-                ?
-            )
-            """,
-            (
-                filename,
-                checksum,
-                applied_at,
-            ),
-        )
-
-    # ---------------------------------------------------------
-
-    def applied_migrations(self) -> list[AppliedMigration]:
-        """
-        Вернуть список применённых миграций.
-        """
-
-        migrations = self._load_applied()
-
-        return sorted(
-            migrations.values(),
-            key=lambda migration: migration.filename,
-        )
-
-    # ---------------------------------------------------------
-
-    def has_migration(
-        self,
-        filename: str,
-    ) -> bool:
-        """
-        Проверить, применена ли миграция.
-        """
-
-        cursor = self.connection.execute(
-            f"""
-            SELECT 1
-            FROM {MIGRATIONS_TABLE}
-            WHERE filename = ?
-            """,
-            (filename,),
-        )
-
-        return cursor.fetchone() is not None
-
-        # ---------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def _ensure_table(self) -> None:
         """
-        Создать служебную таблицу миграций.
+        Создать служебную таблицу migrations.
+
+        applied_at хранится как Unix Timestamp UTC,
+        в соответствии с 000_initial.sql.
         """
 
         self.connection.execute(
@@ -267,106 +283,288 @@ class MigrationManager:
             (
                 filename TEXT PRIMARY KEY,
                 checksum TEXT NOT NULL,
-                applied_at TEXT NOT NULL
+                applied_at INTEGER NOT NULL
+                    DEFAULT (strftime('%s', 'now'))
             )
             """
         )
 
+        self.connection.commit()
 
-    # ---------------------------------------------------------
+    # ==================================================================
+    # Validation
+    # ==================================================================
 
-    def current_version(self) -> str | None:
+    @staticmethod
+    def _validate_checksum(
+        *,
+        filename: str,
+        actual_checksum: str,
+        expected_checksum: str,
+    ) -> None:
         """
-        Вернуть имя последней применённой миграции.
-        """
-
-        cursor = self.connection.execute(
-            f"""
-            SELECT filename
-            FROM {MIGRATIONS_TABLE}
-            ORDER BY filename DESC
-            LIMIT 1
-            """
-        )
-
-        row = cursor.fetchone()
-
-        if row is None:
-            return None
-
-        return row["filename"]
-
-    # ---------------------------------------------------------
-
-    def pending_migrations(self) -> list[str]:
-        """
-        Вернуть список ещё не применённых миграций.
+        Проверить checksum миграции.
         """
 
-        applied = self._load_applied()
+        if actual_checksum != expected_checksum:
+            raise MigrationChecksumError(
+                f"Migration '{filename}' has been modified."
+            )
 
-        pending: list[str] = []
+    # ==================================================================
+    # SQL parser
+    # ==================================================================
 
-        for filename, _ in ResourceManager.migration_files():
-
-            if filename not in applied:
-                pending.append(filename)
-
-        return pending
-
-    # ---------------------------------------------------------
-
-    def migration_count(self) -> int:
+    @staticmethod
+    def _split_sql(sql: str) -> list[str]:
         """
-        Количество применённых миграций.
-        """
+        Разделить SQL-файл на отдельные SQL statements.
 
-        cursor = self.connection.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM {MIGRATIONS_TABLE}
-            """
-        )
+        В отличие от простого split(';'), этот парсер понимает:
 
-        row = cursor.fetchone()
+        - строковые литералы '...';
+        - экранированные строки '';
+        - двойные кавычки "...";
+        - комментарии -- ...;
+        - комментарии /* ... */;
+        - CREATE TRIGGER ... BEGIN ... END;
 
-        return int(row[0])
-
-    # ---------------------------------------------------------
-
-    def is_database_initialized(self) -> bool:
-        """
-        Проверить, была ли база данных инициализирована.
-        """
-
-        return self.migration_count() > 0
-        # ---------------------------------------------------------
-
-    def __len__(self) -> int:
-        """
-        Количество применённых миграций.
-        """
-
-        return self.migration_count()
-
-    # ---------------------------------------------------------
-
-    def __contains__(self, filename: str) -> bool:
-        """
-        Проверка наличия миграции.
+        Последнее особенно важно для наших миграций.
 
         Пример:
-            if "001_add_events.sql" in manager:
-                ...
+
+            CREATE TRIGGER ...
+            BEGIN
+                UPDATE devices;
+            END;
+
+        воспринимается как ОДИН SQL statement.
         """
 
-        return self.has_migration(filename)
+        statements: list[str] = []
+        current: list[str] = []
 
-    # ---------------------------------------------------------
+        in_single_quote = False
+        in_double_quote = False
+        in_line_comment = False
+        in_block_comment = False
 
-    def __repr__(self) -> str:
+        # Количество вложенных BEGIN внутри trigger.
+        #
+        # Для наших миграций практически всегда будет:
+        #
+        # BEGIN
+        #     ...
+        # END;
+        #
+        # Но поддержим и вложенные BEGIN ... END.
+        begin_depth = 0
 
-        return (
-            f"{self.__class__.__name__}("
-            f"migrations={self.migration_count()})"
-        )
+        # Находим, является ли текущий statement CREATE TRIGGER.
+        current_is_trigger = False
+
+        i = 0
+
+        while i < len(sql):
+            char = sql[i]
+            next_char = sql[i + 1] if i + 1 < len(sql) else ""
+
+            # ----------------------------------------------------------
+            # Line comment
+            # ----------------------------------------------------------
+
+            if in_line_comment:
+                if char == "\n":
+                    in_line_comment = False
+                    current.append("\n")
+
+                i += 1
+                continue
+
+            # ----------------------------------------------------------
+            # Block comment
+            # ----------------------------------------------------------
+
+            if in_block_comment:
+                if char == "*" and next_char == "/":
+                    in_block_comment = False
+                    i += 2
+                    continue
+
+                i += 1
+                continue
+
+            # ----------------------------------------------------------
+            # Single quoted string
+            # ----------------------------------------------------------
+
+            if in_single_quote:
+                current.append(char)
+
+                if char == "'":
+                    if next_char == "'":
+                        current.append(next_char)
+                        i += 2
+                        continue
+
+                    in_single_quote = False
+
+                i += 1
+                continue
+
+            # ----------------------------------------------------------
+            # Double quoted identifier
+            # ----------------------------------------------------------
+
+            if in_double_quote:
+                current.append(char)
+
+                if char == '"':
+                    if next_char == '"':
+                        current.append(next_char)
+                        i += 2
+                        continue
+
+                    in_double_quote = False
+
+                i += 1
+                continue
+
+            # ----------------------------------------------------------
+            # Start comments
+            # ----------------------------------------------------------
+
+            if char == "-" and next_char == "-":
+                in_line_comment = True
+                i += 2
+                continue
+
+            if char == "/" and next_char == "*":
+                in_block_comment = True
+                i += 2
+                continue
+
+            # ----------------------------------------------------------
+            # Start quotes
+            # ----------------------------------------------------------
+
+            if char == "'":
+                in_single_quote = True
+                current.append(char)
+                i += 1
+                continue
+
+            if char == '"':
+                in_double_quote = True
+                current.append(char)
+                i += 1
+                continue
+
+            # ----------------------------------------------------------
+            # Detect CREATE TRIGGER
+            # ----------------------------------------------------------
+
+            if not current_is_trigger:
+                partial = "".join(current).upper()
+
+                if (
+                    "CREATE TRIGGER" in partial
+                    or "CREATE TEMP TRIGGER" in partial
+                    or "CREATE TEMPORARY TRIGGER" in partial
+                ):
+                    current_is_trigger = True
+
+            # ----------------------------------------------------------
+            # BEGIN inside trigger
+            # ----------------------------------------------------------
+
+            if current_is_trigger:
+                upper_remaining = sql[i:].upper()
+
+                if (
+                    upper_remaining.startswith("BEGIN")
+                    and (
+                        i == 0
+                        or not sql[i - 1].isalnum()
+                    )
+                    and (
+                        i + 5 >= len(sql)
+                        or not sql[i + 5].isalnum()
+                    )
+                ):
+                    begin_depth += 1
+
+                    current.extend(sql[i:i + 5])
+                    i += 5
+                    continue
+
+            # ----------------------------------------------------------
+            # END inside trigger
+            # ----------------------------------------------------------
+
+            if current_is_trigger:
+                upper_remaining = sql[i:].upper()
+
+                if (
+                    upper_remaining.startswith("END")
+                    and (
+                        i == 0
+                        or not sql[i - 1].isalnum()
+                    )
+                    and (
+                        i + 3 >= len(sql)
+                        or not sql[i + 3].isalnum()
+                    )
+                ):
+                    if begin_depth > 0:
+                        begin_depth -= 1
+
+                    current.extend(sql[i:i + 3])
+                    i += 3
+                    continue
+
+            # ----------------------------------------------------------
+            # Statement separator
+            # ----------------------------------------------------------
+
+            if char == ";":
+                # Для обычного SQL ';' заканчивает statement.
+                #
+                # Для trigger:
+                #
+                # BEGIN
+                #     UPDATE ...;
+                # END;
+                #
+                # первый ';' НЕ заканчивает statement.
+                if current_is_trigger and begin_depth > 0:
+                    current.append(char)
+                    i += 1
+                    continue
+
+                statement = "".join(current).strip()
+
+                if statement:
+                    statements.append(statement)
+
+                current.clear()
+
+                current_is_trigger = False
+                begin_depth = 0
+
+                i += 1
+                continue
+
+            current.append(char)
+            i += 1
+
+        # --------------------------------------------------------------
+        # Последний statement
+        # --------------------------------------------------------------
+
+        statement = "".join(current).strip()
+
+        if statement:
+            statements.append(statement)
+
+        return statements

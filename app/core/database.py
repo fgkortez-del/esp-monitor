@@ -4,20 +4,21 @@
 Database отвечает только за:
 
 - открытие соединения;
-- выполнение SQL;
-- выполнение транзакций;
+- закрытие соединения;
+- выполнение SQL-запросов;
+- выполнение массовых SQL-запросов;
+- получение одной или нескольких строк;
 - запуск MigrationManager.
 
-Никакой бизнес-логики здесь нет.
+Бизнес-логики и логики миграций здесь нет.
 """
 
 from __future__ import annotations
-
+from app.core.transaction import Transaction
 import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
-from contextlib import suppress
 
 from app.core.config import config
 from app.core.exceptions.database import (
@@ -26,40 +27,9 @@ from app.core.exceptions.database import (
 )
 from app.core.migration_manager import MigrationManager
 
+
 logger = logging.getLogger(__name__)
 
-class DatabaseTransaction:
-    """
-    Контекстный менеджер транзакции SQLite.
-    """
-
-    def __init__(self, database: "Database") -> None:
-
-        self.database = database
-
-    # ------------------------------------------------------------------
-
-    def __enter__(self) -> "Database":
-
-        self.database.begin()
-
-        return self.database
-
-    # ------------------------------------------------------------------
-
-    def __exit__(
-        self,
-        exc_type,
-        exc_value,
-        traceback,
-    ) -> bool:
-
-        if exc_type is None:
-            self.database.commit()
-        else:
-            self.database.rollback()
-
-        return False
 
 class Database:
     """
@@ -70,129 +40,156 @@ class Database:
         self,
         database: Path | None = None,
     ) -> None:
-
         self.database = database or config.database_file
-
         self.connection: sqlite3.Connection | None = None
 
-    # ---------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Connection
+    # ------------------------------------------------------------------
 
     @property
     def connected(self) -> bool:
         """
         Проверить наличие открытого соединения.
         """
-
         return self.connection is not None
 
-    # ---------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def connect(self) -> None:
         """
         Открыть соединение с SQLite.
-        """
 
+        Повторный вызов безопасен.
+        """
         if self.connected:
             return
 
         logger.info("Opening database: %s", self.database)
 
         try:
+            self.database.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
 
-            self.connection = sqlite3.connect(
+            connection = sqlite3.connect(
                 self.database,
                 detect_types=sqlite3.PARSE_DECLTYPES,
                 check_same_thread=False,
             )
 
-        except sqlite3.Error as exc:
-
+        except (sqlite3.Error, OSError) as exc:
             raise DatabaseConnectionError(
                 f"Cannot open database '{self.database}'."
             ) from exc
 
-        self.connection.row_factory = sqlite3.Row
+        connection.row_factory = sqlite3.Row
 
-        self.connection.execute(
-            "PRAGMA foreign_keys = ON"
-        )
-        self.connection.execute("PRAGMA journal_mode = WAL")
-        self.connection.execute("PRAGMA synchronous = NORMAL")
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
+
+        except sqlite3.Error as exc:
+            connection.close()
+
+            raise DatabaseConnectionError(
+                f"Cannot configure database '{self.database}'."
+            ) from exc
+
+        self.connection = connection
 
         logger.info("Database connected.")
 
     # ------------------------------------------------------------------
 
-    def begin(self) -> None:
-        """
-        Начать транзакцию.
-        """
-
-        self.connect()
-
-        self.connection.execute("BEGIN")
-
-    # ------------------------------------------------------------------
-
-    def commit(self) -> None:
-        """
-        Зафиксировать транзакцию.
-        """
-
-        if self.connection is None:
-            return
-
-        self.connection.commit()
-
-    # ------------------------------------------------------------------
-
-    def rollback(self) -> None:
-        """
-        Откатить транзакцию.
-        """
-
-        if self.connection is None:
-            return
-
-        with suppress(Exception):
-            self.connection.rollback()
-
-    # ---------------------------------------------------------
-
-    def initialize(self) -> None:
-        """
-        Инициализация базы данных.
-        """
-
-        self.connect()
-
-        manager = MigrationManager(self.connection)
-
-        manager.migrate()
-
-        logger.info(
-            "Database initialized (%d migrations).",
-            len(manager),
-        )
-
-    # ---------------------------------------------------------
-
     def close(self) -> None:
         """
         Закрыть соединение с базой данных.
         """
-
         if not self.connected:
             return
 
         logger.info("Closing database.")
 
-        with suppress(Exception):
+        try:
             self.connection.close()
 
-        self.connection = None
+        except sqlite3.Error:
+            logger.exception(
+                "Error while closing database '%s'.",
+                self.database,
+            )
 
-    # ---------------------------------------------------------
+        finally:
+            self.connection = None
+
+    # ------------------------------------------------------------------
+    # Transactions
+    # ------------------------------------------------------------------
+
+    def commit(self) -> None:
+        """
+        Зафиксировать текущую транзакцию.
+        """
+        self.connect()
+
+        try:
+            self.connection.commit()
+
+        except sqlite3.Error as exc:
+            raise DatabaseQueryError(
+                "Cannot commit database transaction."
+            ) from exc
+
+    # ------------------------------------------------------------------
+
+    def rollback(self) -> None:
+        """
+        Откатить текущую транзакцию.
+        """
+        self.connect()
+
+        try:
+            self.connection.rollback()
+
+        except sqlite3.Error as exc:
+            raise DatabaseQueryError(
+                "Cannot rollback database transaction."
+            ) from exc
+
+    # ------------------------------------------------------------------
+
+    def transaction(self) -> Transaction:
+        """
+        Получить контекстный менеджер транзакции.
+        """
+        self.connect()
+
+        return Transaction(self.connection)
+
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
+
+    def initialize(self) -> None:
+        """
+        Инициализировать базу данных и применить миграции.
+        """
+        self.connect()
+
+        manager = MigrationManager(self.connection)
+        manager.migrate()
+
+        logger.info(
+            "Database initialized (%d migrations).",
+            len(manager.applied_migrations()),
+        )
+
+    # ------------------------------------------------------------------
+    # SQL
+    # ------------------------------------------------------------------
 
     def execute(
         self,
@@ -202,15 +199,28 @@ class Database:
         """
         Выполнить SQL-запрос.
         """
+        self.connect()
 
-        cursor = self._execute(
-            sql,
-            parameters,
-        )
+        parameters = tuple(parameters)
 
-        return cursor
+        try:
+            logger.debug(
+                "SQL execute: %s | parameters=%r",
+                sql.strip(),
+                parameters,
+            )
 
-    # ---------------------------------------------------------
+            return self.connection.execute(
+                sql,
+                parameters,
+            )
+
+        except sqlite3.Error as exc:
+            raise DatabaseQueryError(
+                str(exc)
+            ) from exc
+
+    # ------------------------------------------------------------------
 
     def executemany(
         self,
@@ -218,89 +228,27 @@ class Database:
         parameters: Iterable[Iterable[Any]],
     ) -> sqlite3.Cursor:
         """
-        Выполнить массовый SQL-запрос.
+        Выполнить SQL-запрос для нескольких наборов параметров.
         """
-
-        self.connect()
-
-        try:
-
-            cursor = self.connection.executemany(
-                sql,
-                parameters,
-            )
-
-            return cursor
-
-        except sqlite3.Error as exc:
-
-            raise DatabaseQueryError(
-                str(exc)
-            ) from exc
-
-    # ---------------------------------------------------------
-
-    def execute_script(
-        self,
-        sql: str,
-    ) -> None:
-        """
-        Выполнить SQL-скрипт.
-        """
-
         self.connect()
 
         try:
             logger.debug(
-                "Executing SQL script."
-            )
-            self.connection.executescript(sql)
-
-        except sqlite3.Error as exc:
-
-            raise DatabaseQueryError(
-                str(exc)
-            ) from exc
-
-    # ---------------------------------------------------------
-
-    def _execute(
-        self,
-        sql: str,
-        parameters: Iterable[Any] = (),
-    ) -> sqlite3.Cursor:
-        """
-        Внутреннее выполнение SQL-запроса.
-        Все SQL проходят через этот метод.
-        """
-
-        self.connect()
-
-        logger.debug(
-            "SQL: %s | params=%s",
-            sql.strip(),
-            tuple(parameters),
-        )
-
-        try:
-
-            return self.connection.execute(
-                sql,
-                tuple(parameters),
-            )
-
-        except sqlite3.Error as exc:
-
-            logger.exception(
-                "SQL execution failed: %s",
+                "SQL executemany: %s",
                 sql.strip(),
             )
 
+            return self.connection.executemany(
+                sql,
+                parameters,
+            )
+
+        except sqlite3.Error as exc:
             raise DatabaseQueryError(
                 str(exc)
             ) from exc
 
-    # ---------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def query_one(
         self,
@@ -308,17 +256,16 @@ class Database:
         parameters: Iterable[Any] = (),
     ) -> sqlite3.Row | None:
         """
-        Вернуть одну запись.
-        """
+        Выполнить SELECT и вернуть одну строку.
 
-        cursor = self._execute(
+        Если строк нет, возвращается None.
+        """
+        return self.execute(
             sql,
             parameters,
-        )
+        ).fetchone()
 
-        return cursor.fetchone()
-
-    # ---------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def query_all(
         self,
@@ -326,60 +273,9 @@ class Database:
         parameters: Iterable[Any] = (),
     ) -> list[sqlite3.Row]:
         """
-        Вернуть список записей.
+        Выполнить SELECT и вернуть все строки.
         """
-
-        cursor = self._execute(
+        return self.execute(
             sql,
             parameters,
-        )
-
-        return cursor.fetchall()
-
-    # ---------------------------------------------------------
-
-    def cursor(self) -> sqlite3.Cursor:
-        """
-        Получить курсор SQLite.
-        """
-
-        self.connect()
-
-        return self.connection.cursor()
-
-    # ------------------------------------------------------------------
-
-    def transaction(self) -> DatabaseTransaction:
-        """
-        Вернуть контекстный менеджер транзакции.
-        """
-
-        return DatabaseTransaction(self)
-
-    # ---------------------------------------------------------
-
-    def __enter__(self) -> "Database":
-
-        self.connect()
-
-        return self
-
-    # ---------------------------------------------------------
-
-    def __exit__(
-        self,
-        exc_type,
-        exc_value,
-        traceback,
-    ) -> None:
-
-        self.close()
-
-    # ---------------------------------------------------------
-
-    def __repr__(self) -> str:
-
-        return (
-            f"{self.__class__.__name__}("
-            f"database='{self.database}')"
-        )
+        ).fetchall()
