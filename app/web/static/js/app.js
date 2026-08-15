@@ -313,6 +313,17 @@ async function loadHistory(deviceName) {
     return data.readings || [];
 }
 
+// ======================================================================
+// Normalize time
+// ======================================================================
+
+function normalizeTimestamp(timestamp) {
+    let value = String(timestamp);
+    if (!value.endsWith("Z") && !value.includes("+")) {
+        value += "Z";
+    }
+    return value;
+}
 
 // ======================================================================
 // 24 hours filtering
@@ -358,12 +369,8 @@ function last24Hours(readings) {
         )
         .sort(
             (a, b) =>
-                new Date(
-                    `${a.timestamp}Z`
-                ) -
-                new Date(
-                    `${b.timestamp}Z`
-                )
+                new Date(normalizeTimestamp(a.timestamp)) -
+                new Date(normalizeTimestamp(b.timestamp))
         );
 }
 
